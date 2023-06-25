@@ -1,0 +1,190 @@
+# #!/usr/bin/env python
+import zmq
+import time
+import rospy
+import threading
+import time
+
+from std_msgs.msg import (
+    UInt16,
+)
+
+import baxter_interface
+from baxter_interface import CHECK_VERSION
+
+from cv_bridge import CvBridge, CvBridgeError
+import cv2
+from cv_bridge import CvBridge, CvBridgeError
+import numpy as np
+import json
+
+from sensor_msgs.msg import Image, CameraInfo
+from gazebo_msgs.srv import SpawnModel, DeleteModel, SetModelState, SetLinkProperties, GetLinkProperties
+from geometry_msgs.msg import PoseStamped, Pose, Twist, Point, Quaternion
+from gazebo_msgs.msg import ModelState, ModelStates
+
+
+class BaxterServer:
+    def __init__(self):
+        print("Initializing node... ")
+        rospy.init_node("streamer_node")
+        # pub_rate = rospy.Publisher(robot_ns + '/joint_state_publish_rate', UInt16, queue_size=10)
+        self._rs = baxter_interface.RobotEnable(CHECK_VERSION)
+        self._init_state = self._rs.state().enabled
+        print("Enabling robot... ")
+        self._rs.enable()
+
+        # set joint state publishing to 100Hz
+		# pub_rate.publish(100)
+        
+        # init - need to add all the variables that can be controlled!
+		# the speed is set to 1,0 (max) by default - this should be controlled by the user!
+        self.arm_left = baxter_interface.Limb('left')                        
+        self.arm_left.set_joint_position_speed(1.0)
+
+        self.arm_right = baxter_interface.Limb('right')
+        self.arm_right.set_joint_position_speed(1.0)
+		
+        self.gripper_left = baxter_interface.Gripper('left')
+        self.gripper_right = baxter_interface.Gripper('right')
+		
+        self.head = baxter_interface.Head()
+        self.bridge = CvBridge()
+        head_image_topic = 'cameras/head_camera/image/'
+        rospy.Subscriber(head_image_topic, Image, self.head_image_callback)
+        left_image_topic = 'cameras/left_hand_camera/image/'
+        rospy.Subscriber(left_image_topic, Image, self.left_image_callback)
+        rigth_image_topic = 'cameras/right_hand_camera/image/'
+        rospy.Subscriber(rigth_image_topic, Image, self.right_image_callback)
+        # topic =  '/gazebo/model_states'
+        # rospy.Subscriber(topic, ModelStates, self.gazebo_models_callback)
+        # self.model_keys=[]
+
+        #self.head_camera = baxter_interface.CameraController()
+        
+        self.init_stream()
+        
+        t1=threading.Thread(target=publish_data)
+        t1.start()
+        
+    def pub_socket_inint(self):
+	self.port = "15557"
+    	self.context = zmq.Context()
+    	self.socket = self.context.socket(zmq.PUB)
+    	self.socket.bind("tcp://*:%s" % self.port)
+    
+    def init_stream(self):
+	self.port = "15557"
+        self.context = zmq.Context()
+        self.socket = self.context.socket(zmq.PUB)
+        self.socket.bind("tcp://*:%s" % self.port)
+        
+	self.port2 = "15558"
+	self.socket2 = self.context.socket(zmq.REP)
+	self.socket2.bind("tcp://*:%s" % self.port2)
+
+        # Sleep a bit of time until the connection is properly established,
+        # otherwise some messages may be lost.
+        # http://stackoverflow.com/questions/7470472/lost-messages-on-zeromq-pub-sub
+        time.sleep(1)
+
+        print("Publisher initialized.")
+
+
+    def set_neutral(self):
+        print("Moving to neutral pose...")
+        self.arm_left.move_to_neutral()
+        self.arm_right.move_to_neutral()
+
+    def clean_shutdown(self):
+        print("\nExiting example...")
+                
+        if not self._init_state:
+            print("Disabling robot...")
+            self._rs.disable()
+        return True
+    
+    def head_image_callback(self, msg):
+        self.head_img = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+
+    def left_image_callback(self, msg):
+        self.left_img = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+
+    def right_image_callback(self, msg):
+        self.right_img = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+        
+    def publish_data(self):
+	while not rospy.is_shutdown():   
+            data = {
+                'arm_left': {
+                                'angles': self.arm_left.joint_angles(),
+                                'velocities': self.arm_left.joint_velocities()
+                            },
+                'arm_right': {
+                                'angles': self.arm_right.joint_angles(),
+                                'velocities': self.arm_right.joint_velocities()
+                            },    
+                'gripper_right': { },
+					                    
+                #'head_img': json.dumps(self.head_img.tolist()),
+        
+        #'left_img': json.dumps(self.left_img.tolist()),
+                #'right_img': json.dumps(self.right_img.tolist()),
+            }
+                    
+            self.socket.send_json(data)
+
+    def run(self):
+        """
+        """
+        rate = rospy.Rate(10)
+
+        print("Publishing robot state ...")
+
+        self.gripper_left.open()
+        self.gripper_right.open()
+
+        # ~ while not rospy.is_shutdown():   
+            # ~ data = {
+                # ~ 'arm_left': {
+                                # ~ 'angles': self.arm_left.joint_angles(),
+                                # ~ 'velocities': self.arm_left.joint_velocities()
+                            # ~ },
+                # ~ 'arm_right': {
+                                # ~ 'angles': self.arm_right.joint_angles(),
+                                # ~ 'velocities': self.arm_right.joint_velocities()
+                            # ~ },    
+                # ~ 'gripper_right': { },
+					                    
+                # ~ #'head_img': json.dumps(self.head_img.tolist()),
+                # ~ #'left_img': json.dumps(self.left_img.tolist()),
+                # ~ #'right_img': json.dumps(self.right_img.tolist()),
+            # ~ }
+                    
+            #self.socket.send_json(data)	
+            
+            # Check commands
+            msg = self.socket2.recv_json()
+            print(msg)
+            
+            if 'head' in msg:
+				par = msg['head']
+				print(msg)
+				self.head.command_nod()
+            
+            self.socket2.send("yes")
+            
+            cmd = {}
+            
+            rate.sleep()
+
+def main():
+    server = BaxterServer()
+    rospy.on_shutdown(server.clean_shutdown)
+    server.run()
+
+    print("Done.")
+    return 0
+
+if __name__ == '__main__':
+    main()
